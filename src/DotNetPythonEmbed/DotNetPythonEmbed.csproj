@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>DotNetPythonEmbed</PackageId>
+    <Authors>DotNetPythonEmbed Contributors</Authors>
+    <Description>Utilities for managing an embedded Python distribution and virtual environments.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.IO.Compression.ZipFile" Version="8.0.0" />
+    <Content Include="get-pip.py" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="." />
+  </ItemGroup>
+</Project>

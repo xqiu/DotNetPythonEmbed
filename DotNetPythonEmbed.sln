@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotNetPythonEmbed", "src\Do
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotNetPythonEmbed.Tests", "tests\DotNetPythonEmbed.Tests\DotNetPythonEmbed.Tests.csproj", "{6F191B16-4F0E-4563-BFB3-6F7DE65F9A72}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExampleCloneRunner", "src\ExampleCloneRunner\ExampleCloneRunner.csproj", "{A7E2F0F1-4C24-4B9D-A9BA-6B33F7B1B16F}"
+EndProject
 Global
     GlobalSection(SolutionConfigurationPlatforms) = preSolution
         Debug|Any CPU = Debug|Any CPU
@@ -20,6 +22,10 @@ Global
         {6F191B16-4F0E-4563-BFB3-6F7DE65F9A72}.Debug|Any CPU.Build.0 = Debug|Any CPU
         {6F191B16-4F0E-4563-BFB3-6F7DE65F9A72}.Release|Any CPU.ActiveCfg = Release|Any CPU
         {6F191B16-4F0E-4563-BFB3-6F7DE65F9A72}.Release|Any CPU.Build.0 = Release|Any CPU
+        {A7E2F0F1-4C24-4B9D-A9BA-6B33F7B1B16F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {A7E2F0F1-4C24-4B9D-A9BA-6B33F7B1B16F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {A7E2F0F1-4C24-4B9D-A9BA-6B33F7B1B16F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {A7E2F0F1-4C24-4B9D-A9BA-6B33F7B1B16F}.Release|Any CPU.Build.0 = Release|Any CPU
     EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

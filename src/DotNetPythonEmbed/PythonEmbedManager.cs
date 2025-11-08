@@ -30,6 +30,8 @@ public class PythonEmbedManager
             throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
         }
 
+        const string getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
+
         var pythonExecutable = Path.Combine(pythonDir, "python.exe");
         if (File.Exists(pythonExecutable))
         {
@@ -44,14 +46,8 @@ public class PythonEmbedManager
             DownloadFile(pythonEmbedUrl, temporaryZip);
             ExtractZip(temporaryZip, pythonDir);
 
-            var sourceGetPip = Path.Combine(AppContext.BaseDirectory, "get-pip.py");
-            if (!File.Exists(sourceGetPip))
-            {
-                throw new FileNotFoundException("The get-pip.py file must exist next to the executing assembly.", sourceGetPip);
-            }
-
             var destinationGetPip = Path.Combine(pythonDir, "get-pip.py");
-            File.Copy(sourceGetPip, destinationGetPip, overwrite: true);
+            DownloadFile(getPipUrl, destinationGetPip);
 
             RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", pythonDir);
             RunProcess(pythonExecutable, "-m venv venv", pythonDir);

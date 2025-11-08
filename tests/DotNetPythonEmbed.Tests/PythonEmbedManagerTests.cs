@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using DotNetPythonEmbed;
 using Xunit;
 
@@ -31,7 +32,6 @@ public sealed class PythonEmbedManagerTests : IDisposable
     public void Init_DownloadsAndBootstrapsPythonWhenMissing()
     {
         var pythonDir = CreateTempDirectory();
-        EnsureGetPipExists();
         var manager = new RecordingPythonEmbedManager();
 
         manager.Init("http://example.com/python.zip", pythonDir);
@@ -39,6 +39,7 @@ public sealed class PythonEmbedManagerTests : IDisposable
         Assert.True(manager.DownloadFileCalled);
         Assert.True(manager.ExtractZipCalled);
         Assert.True(File.Exists(Path.Combine(pythonDir, "python.exe")));
+        Assert.Contains(manager.DownloadFileCalls, call => call.Url == "https://bootstrap.pypa.io/get-pip.py");
         Assert.Contains(manager.RunProcessCalls, call => call.Arguments.Contains("get-pip.py", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(manager.RunProcessCalls, call => call.Arguments == "-m venv venv");
     }
@@ -145,15 +146,6 @@ public sealed class PythonEmbedManagerTests : IDisposable
         return directory;
     }
 
-    private static void EnsureGetPipExists()
-    {
-        var getPipPath = Path.Combine(AppContext.BaseDirectory, "get-pip.py");
-        if (!File.Exists(getPipPath))
-        {
-            File.WriteAllText(getPipPath, "print('placeholder')");
-        }
-    }
-
     public void Dispose()
     {
         foreach (var directory in _temporaryDirectories)
@@ -176,11 +168,13 @@ public sealed class PythonEmbedManagerTests : IDisposable
     {
         public bool DownloadFileCalled { get; private set; }
         public bool ExtractZipCalled { get; private set; }
+        public List<(string Url, string Destination)> DownloadFileCalls { get; } = new();
         public List<(string FileName, string Arguments, string WorkingDirectory)> RunProcessCalls { get; } = new();
 
         protected override void DownloadFile(string url, string destination)
         {
             DownloadFileCalled = true;
+            DownloadFileCalls.Add((url, destination));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.WriteAllText(destination, string.Empty);
         }

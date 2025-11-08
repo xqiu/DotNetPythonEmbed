@@ -12,6 +12,5 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.IO.Compression.ZipFile" Version="8.0.0" />
-    <Content Include="get-pip.py" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="." />
   </ItemGroup>
 </Project>

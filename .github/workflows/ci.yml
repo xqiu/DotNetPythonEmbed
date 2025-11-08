@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore DotNetPythonEmbed.sln
+        continue-on-error: false
+
+      - name: Build
+        run: dotnet build DotNetPythonEmbed.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test DotNetPythonEmbed.sln --configuration Release --no-build --verbosity normal
+
+      - name: Pack
+        run: dotnet pack src/DotNetPythonEmbed/DotNetPythonEmbed.csproj --configuration Release --no-build --output ./artifacts
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts
+          if-no-files-found: error

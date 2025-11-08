@@ -1,0 +1,55 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional package version override (defaults to project version)'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore DotNetPythonEmbed.sln
+
+      - name: Build
+        run: dotnet build DotNetPythonEmbed.sln --configuration Release --no-restore
+
+      - name: Pack
+        run: |
+          VERSION_INPUT="${{ github.event.inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            dotnet pack src/DotNetPythonEmbed/DotNetPythonEmbed.csproj --configuration Release --no-build --output ./artifacts /p:PackageVersion=$VERSION_INPUT
+          else
+            dotnet pack src/DotNetPythonEmbed/DotNetPythonEmbed.csproj --configuration Release --no-build --output ./artifacts
+          fi
+
+      - name: Publish to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo 'NUGET_API_KEY secret is not configured' >&2
+            exit 1
+          fi
+          PACKAGE_PATH=$(find ./artifacts -maxdepth 1 -name 'DotNetPythonEmbed*.nupkg' | sort | tail -n 1)
+          if [ -z "$PACKAGE_PATH" ]; then
+            echo 'No package found to publish' >&2
+            exit 1
+          fi
+          dotnet nuget push "$PACKAGE_PATH" \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate

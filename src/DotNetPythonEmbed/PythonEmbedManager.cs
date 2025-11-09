@@ -50,7 +50,24 @@ public class PythonEmbedManager
             DownloadFile(getPipUrl, destinationGetPip);
 
             RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", pythonDir);
-            RunProcess(pythonExecutable, "-m venv venv", pythonDir);
+
+            // remove *._pth file to uncomment #import site
+            var pthFiles = Directory.GetFiles(pythonDir, "python*._pth", SearchOption.TopDirectoryOnly);
+            foreach (var pthFile in pthFiles)
+            {
+                var lines = File.ReadAllLines(pthFile);
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    if (lines[i].StartsWith("#import site", StringComparison.OrdinalIgnoreCase))
+                    {
+                        lines[i] = "import site";
+                    }
+                }
+                File.WriteAllLines(pthFile, lines);
+            }
+
+            RunProcess(pythonExecutable, "-m pip install virtualenv", pythonDir);
+            RunProcess(pythonExecutable, "-m virtualenv venv", pythonDir);
         }
         finally
         {
@@ -198,6 +215,8 @@ public class PythonEmbedManager
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        Console.WriteLine($"Executing process in {workingDirectory}> {fileName} {arguments}");
 
         using var process = new Process { StartInfo = startInfo };
         process.Start();

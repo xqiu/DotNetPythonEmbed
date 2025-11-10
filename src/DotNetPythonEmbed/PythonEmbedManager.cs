@@ -9,50 +9,61 @@ namespace DotNetPythonEmbed;
 /// </summary>
 public class PythonEmbedManager
 {
+    private string PythonDir { get; set; }
+
+    /// <summary>
+    /// Python Embed Url, default to https://www.python.org/ftp/python/3.11.6/python-3.11.6-embed-amd64.zip, can be overridden to use a different version, before calling Init()
+    /// </summary>
+    public string PythonEmbedUrl { get; set; } = "https://www.python.org/ftp/python/3.11.6/python-3.11.6-embed-amd64.zip";
+
+    public PythonEmbedManager(string pythonDir)
+    {
+        if (string.IsNullOrWhiteSpace(pythonDir))
+        {
+            throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
+        }
+        PythonDir = pythonDir;
+    }
+
     /// <summary>
     /// Ensures the embedded Python runtime and virtual environment exist at the specified location.
     /// If the runtime is missing it is downloaded, unpacked, bootstrapped with pip and a virtual
     /// environment named <c>venv</c> is created.
     /// </summary>
-    /// <param name="pythonEmbedUrl">URL to the embedded Python zip file.</param>
-    /// <param name="pythonDir">Destination directory for the Python runtime.</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
     /// <exception cref="ArgumentException">Thrown when parameters are null or empty.</exception>
     /// <exception cref="FileNotFoundException">Thrown when get-pip.py cannot be located.</exception>
-    public void Init(string pythonEmbedUrl, string pythonDir)
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    public async Task<int> InitPythonEnvironment(Action<string> onOutput, Action<string> onError)
     {
-        if (string.IsNullOrWhiteSpace(pythonEmbedUrl))
-        {
-            throw new ArgumentException("The Python embed URL must be provided.", nameof(pythonEmbedUrl));
-        }
-
-        if (string.IsNullOrWhiteSpace(pythonDir))
-        {
-            throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
-        }
-
         const string getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
 
-        var pythonExecutable = Path.Combine(pythonDir, "python.exe");
+        var pythonExecutable = Path.Combine(PythonDir, "python.exe");
         if (File.Exists(pythonExecutable))
         {
-            return;
+            return 0;
         }
 
-        Directory.CreateDirectory(pythonDir);
+        Directory.CreateDirectory(PythonDir);
 
         var temporaryZip = Path.Combine(Path.GetTempPath(), $"python-embed-{Guid.NewGuid():N}.zip");
         try
         {
-            DownloadFile(pythonEmbedUrl, temporaryZip);
-            ExtractZip(temporaryZip, pythonDir);
+            DownloadFile(PythonEmbedUrl, temporaryZip);
+            ExtractZip(temporaryZip, PythonDir);
 
-            var destinationGetPip = Path.Combine(pythonDir, "get-pip.py");
+            var destinationGetPip = Path.Combine(PythonDir, "get-pip.py");
             DownloadFile(getPipUrl, destinationGetPip);
 
-            RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", pythonDir);
+            var result = await RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", null, null, onOutput, onError);
+            if(result != 0)
+            {
+                return result;
+            }
 
             // remove *._pth file to uncomment #import site
-            var pthFiles = Directory.GetFiles(pythonDir, "python*._pth", SearchOption.TopDirectoryOnly);
+            var pthFiles = Directory.GetFiles(PythonDir, "python*._pth", SearchOption.TopDirectoryOnly);
             foreach (var pthFile in pthFiles)
             {
                 var lines = File.ReadAllLines(pthFile);
@@ -66,8 +77,24 @@ public class PythonEmbedManager
                 File.WriteAllLines(pthFile, lines);
             }
 
-            RunProcess(pythonExecutable, "-m pip install virtualenv", pythonDir);
-            RunProcess(pythonExecutable, "-m virtualenv venv", pythonDir);
+            result = await RunProcess(pythonExecutable, "-m pip install virtualenv", null, null, onOutput, onError);
+            if (result != 0)
+            {
+                return result;
+            }
+
+            result = await RunProcess(pythonExecutable, "-m virtualenv venv", null, null, onOutput, onError);
+            return result;
+
+        }
+        catch (Exception)
+        {
+            // Cleanup partially created pythonDir on failure
+            if (Directory.Exists(PythonDir))
+            {
+                Directory.Delete(PythonDir, recursive: true);
+            }
+            throw;
         }
         finally
         {
@@ -79,46 +106,46 @@ public class PythonEmbedManager
     }
 
     /// <summary>
-    /// Extracts the provided zip archive into the specified Python directory.
+    /// Completely remove the python environment we installed from init
     /// </summary>
-    /// <param name="zipPath">Path to the archive containing python code.</param>
-    /// <param name="pythonDir">Destination directory where the archive should be unpacked.</param>
-    public void UnpackPythonCodes(string zipPath, string pythonDir)
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if remove is successful, otherwise an error code.</returns>
+    public int RemovePythonEnvironment(Action<string> onOutput, Action<string> onError)
     {
-        if (string.IsNullOrWhiteSpace(zipPath))
+        // delete PythonDir
+        try
         {
-            throw new ArgumentException("The archive path must be provided.", nameof(zipPath));
+            if (Directory.Exists(PythonDir))
+            {
+                Directory.Delete(PythonDir, recursive: true);
+                onOutput?.Invoke($"Deleted Python environment at {PythonDir}");
+            }
+            else
+            {
+                onOutput?.Invoke($"Python environment at {PythonDir} does not exist.");
+            }
+            return 0;
         }
-
-        if (string.IsNullOrWhiteSpace(pythonDir))
+        catch (Exception ex)
         {
-            throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
+            onError?.Invoke($"Error deleting Python environment at {PythonDir}: {ex.Message}");
+            return -1;
         }
-
-        if (!File.Exists(zipPath))
-        {
-            throw new FileNotFoundException("The archive containing python code was not found.", zipPath);
-        }
-
-        Directory.CreateDirectory(pythonDir);
-        ExtractZip(zipPath, pythonDir);
     }
 
     /// <summary>
     /// Installs the python requirements contained in the provided file into the virtual environment.
     /// </summary>
     /// <param name="requirementPath">Path to a requirements.txt style file.</param>
-    /// <param name="pythonDir">Directory where the python runtime and virtual environment reside.</param>
-    public void InstallRequirement(string requirementPath, string pythonDir)
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    public async Task<int> InstallRequirement(string requirementPath, Action<string> onOutput, Action<string> onError)
     {
         if (string.IsNullOrWhiteSpace(requirementPath))
         {
             throw new ArgumentException("The requirement path must be provided.", nameof(requirementPath));
-        }
-
-        if (string.IsNullOrWhiteSpace(pythonDir))
-        {
-            throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
         }
 
         if (!File.Exists(requirementPath))
@@ -126,41 +153,41 @@ public class PythonEmbedManager
             throw new FileNotFoundException("The requirement file was not found.", requirementPath);
         }
 
-        var venvPython = GetVirtualEnvironmentPythonExecutable(pythonDir);
-        RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", pythonDir);
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        return await RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", null, GetEnvironmentVars(), onOutput, onError);
     }
 
     /// <summary>
-    /// Executes a python script with the provided parameters inside the virtual environment.
+    /// Runs a Python script with the specified parameters.
     /// </summary>
-    /// <param name="pythonFilePath">Path to the python script to execute.</param>
-    /// <param name="pythonDir">Directory where the python runtime and virtual environment reside.</param>
-    /// <param name="parameters">Optional parameters passed to the python script.</param>
-    public void RunPython(string pythonFilePath, string pythonDir, string parameters)
+    /// <param name="pythonScript">Path to the Python script to execute.</param>
+    /// <param name="parameters">Command-line parameters to pass to the script.</param>
+    /// <param name="workingDirectory">Working directory for the script execution.</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="FileNotFoundException"></exception>
+    public async Task<int> RunPython(string pythonScript, string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError)
     {
-        if (string.IsNullOrWhiteSpace(pythonFilePath))
+        if (string.IsNullOrWhiteSpace(pythonScript))
         {
-            throw new ArgumentException("The python file path must be provided.", nameof(pythonFilePath));
+            throw new ArgumentException("The Python script path must be provided.", nameof(pythonScript));
         }
 
-        if (string.IsNullOrWhiteSpace(pythonDir))
+        if (!File.Exists(pythonScript))
         {
-            throw new ArgumentException("The Python directory must be provided.", nameof(pythonDir));
+            throw new FileNotFoundException("The Python script to execute was not found.", pythonScript);
         }
 
-        if (!File.Exists(pythonFilePath))
-        {
-            throw new FileNotFoundException("The python script to execute was not found.", pythonFilePath);
-        }
-
-        var venvPython = GetVirtualEnvironmentPythonExecutable(pythonDir);
-        var arguments = $"\"{Path.GetFullPath(pythonFilePath)}\"";
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        var arguments = $"\"{Path.GetFullPath(pythonScript)}\"";
         if (!string.IsNullOrWhiteSpace(parameters))
         {
             arguments = $"{arguments} {parameters}";
         }
-
-        RunProcess(venvPython, arguments, Path.GetDirectoryName(Path.GetFullPath(pythonFilePath)) ?? pythonDir);
+        // Run the process with the adjusted environment variables
+        return await RunProcess(venvPython, arguments, workingDirectory, GetEnvironmentVars(), onOutput, onError);
     }
 
     protected virtual void DownloadFile(string url, string destination)
@@ -186,15 +213,15 @@ public class PythonEmbedManager
         }
     }
 
-    protected virtual string GetVirtualEnvironmentPythonExecutable(string pythonDir)
+    protected virtual string GetVirtualEnvironmentPythonExecutable()
     {
-        var windowsPath = Path.Combine(pythonDir, "venv", "Scripts", "python.exe");
+        var windowsPath = Path.Combine(PythonDir, "venv", "Scripts", "python.exe");
         if (File.Exists(windowsPath))
         {
             return windowsPath;
         }
 
-        var unixPath = Path.Combine(pythonDir, "venv", "bin", "python");
+        var unixPath = Path.Combine(PythonDir, "venv", "bin", "python");
         if (File.Exists(unixPath))
         {
             return unixPath;
@@ -203,36 +230,75 @@ public class PythonEmbedManager
         throw new FileNotFoundException("The virtual environment python executable could not be located.", windowsPath);
     }
 
-    protected virtual void RunProcess(string fileName, string arguments, string workingDirectory)
+    protected Dictionary<string, string> GetEnvironmentVars()
+    {
+        // Prepare the environment variables as if the venv was activated
+        var venvEnvVars = new Dictionary<string, string>
+        {
+            { "VIRTUAL_ENV", Path.Combine(PythonDir, "venv") }, // Set VIRTUAL_ENV
+            { "PATH", Path.Combine(PythonDir, "venv", "Scripts") + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH") }, // Modify PATH to include venv\Scripts
+            { "PYTHONHOME", PythonDir }, // Optional: Set PYTHONHOME to the pythonDir
+        };
+        return venvEnvVars;
+    }
+
+    protected virtual async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError)
     {
         var startInfo = new ProcessStartInfo
         {
             FileName = fileName,
             Arguments = arguments,
-            WorkingDirectory = workingDirectory,
+            WorkingDirectory = workingDirectory ?? PythonDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
-        Console.WriteLine($"Executing process in {workingDirectory}> {fileName} {arguments}");
-
-        using var process = new Process { StartInfo = startInfo };
-        process.Start();
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        process.WaitForExit();
-
-        var stderr = stderrTask.GetAwaiter().GetResult();
-        if (process.ExitCode != 0)
+        if (environmentVariables != null)
         {
-            throw new InvalidOperationException($"Process '{fileName}' exited with code {process.ExitCode}.\n{stderr}");
+            // Set environment variables for the process if provided
+            foreach (var envVar in environmentVariables)
+            {
+                startInfo.EnvironmentVariables[envVar.Key] = envVar.Value;
+            }
         }
 
-        // Ensure asynchronous reads are observed in case of success as well.
-        _ = stdoutTask.GetAwaiter().GetResult();
+        Console.WriteLine($"Executing process in {PythonDir}> {fileName} {arguments}");
+
+        using var process = new Process { StartInfo = startInfo };
+
+        // Subscribe to the output and error streams to capture them in real-time
+        process.OutputDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                onOutput?.Invoke(e.Data);  // Call the output handler
+            }
+        };
+
+        process.ErrorDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                onError?.Invoke(e.Data);  // Call the error handler
+            }
+        };
+
+        process.Start();
+
+        // Start async reading the output and error streams
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        await process.WaitForExitAsync();  // Use async wait to avoid blocking the UI
+
+        if (process.ExitCode != 0)
+        {
+            var stderr = await process.StandardError.ReadToEndAsync();
+            Console.WriteLine($"Process '{fileName}' exited with code {process.ExitCode}.\n{stderr}");
+        }
+
+        return process.ExitCode;
     }
 }

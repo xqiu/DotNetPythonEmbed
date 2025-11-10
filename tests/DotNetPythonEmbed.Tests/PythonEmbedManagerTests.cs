@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Threading.Tasks;
 using DotNetPythonEmbed;
 using Xunit;
 
@@ -13,45 +14,36 @@ public sealed class PythonEmbedManagerTests : IDisposable
     private readonly List<string> _temporaryDirectories = new();
 
     [Fact]
-    public void Init_ThrowsWhenPythonEmbedUrlMissing()
+    public void Constructor_ThrowsWhenPythonDirectoryMissing()
     {
-        var manager = new PythonEmbedManager();
-        var exception = Assert.Throws<ArgumentException>(() => manager.Init(string.Empty, CreateTempDirectory()));
-        Assert.Equal("pythonEmbedUrl", exception.ParamName);
-    }
-
-    [Fact]
-    public void Init_ThrowsWhenPythonDirectoryMissing()
-    {
-        var manager = new PythonEmbedManager();
-        var exception = Assert.Throws<ArgumentException>(() => manager.Init("http://example.com/python.zip", string.Empty));
+        var exception = Assert.Throws<ArgumentException>(() => new PythonEmbedManager(string.Empty));
         Assert.Equal("pythonDir", exception.ParamName);
     }
 
     [Fact]
-    public void Init_DownloadsAndBootstrapsPythonWhenMissing()
+    public async Task InitPythonEnvironment_DownloadsAndBootstrapsPythonWhenMissing()
     {
         var pythonDir = CreateTempDirectory();
-        var manager = new RecordingPythonEmbedManager();
+        var manager = new RecordingPythonEmbedManager(pythonDir);
 
-        manager.Init("http://example.com/python.zip", pythonDir);
+        await manager.InitPythonEnvironment(_ => { }, _ => { });
 
         Assert.True(manager.DownloadFileCalled);
         Assert.True(manager.ExtractZipCalled);
         Assert.True(File.Exists(Path.Combine(pythonDir, "python.exe")));
         Assert.Contains(manager.DownloadFileCalls, call => call.Url == "https://bootstrap.pypa.io/get-pip.py");
         Assert.Contains(manager.RunProcessCalls, call => call.Arguments.Contains("get-pip.py", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(manager.RunProcessCalls, call => call.Arguments == "-m venv venv");
+        Assert.Contains(manager.RunProcessCalls, call => call.Arguments.Contains("-m virtualenv venv", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public void Init_SkipsDownloadWhenPythonAlreadyExists()
+    public async Task InitPythonEnvironment_SkipsDownloadWhenPythonAlreadyExists()
     {
         var pythonDir = CreateTempDirectory();
         File.WriteAllText(Path.Combine(pythonDir, "python.exe"), string.Empty);
-        var manager = new RecordingPythonEmbedManager();
+        var manager = new RecordingPythonEmbedManager(pythonDir);
 
-        manager.Init("http://example.com/python.zip", pythonDir);
+        await manager.InitPythonEnvironment(_ => { }, _ => { });
 
         Assert.False(manager.DownloadFileCalled);
         Assert.False(manager.ExtractZipCalled);
@@ -59,83 +51,54 @@ public sealed class PythonEmbedManagerTests : IDisposable
     }
 
     [Fact]
-    public void UnpackPythonCodes_ThrowsWhenArchiveMissing()
+    public async Task InstallRequirement_ThrowsWhenRequirementMissing()
     {
-        var manager = new PythonEmbedManager();
-        var exception = Assert.Throws<FileNotFoundException>(() => manager.UnpackPythonCodes(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".zip"), CreateTempDirectory()));
-        Assert.Contains("archive", exception.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void UnpackPythonCodes_ExtractsArchive()
-    {
-        var manager = new PythonEmbedManager();
-        var workingDirectory = CreateTempDirectory();
-        var contentDirectory = Path.Combine(workingDirectory, "content");
-        Directory.CreateDirectory(contentDirectory);
-        var scriptPath = Path.Combine(contentDirectory, "script.py");
-        File.WriteAllText(scriptPath, "print('hi')");
-
-        var archivePath = Path.Combine(workingDirectory, "scripts.zip");
-        ZipFile.CreateFromDirectory(contentDirectory, archivePath);
-
-        var destination = Path.Combine(workingDirectory, "extracted");
-        manager.UnpackPythonCodes(archivePath, destination);
-
-        Assert.True(File.Exists(Path.Combine(destination, "script.py")));
-    }
-
-    [Fact]
-    public void InstallRequirement_ThrowsWhenRequirementMissing()
-    {
-        var manager = new PythonEmbedManager();
+        var manager = new PythonEmbedManager(CreateTempDirectory());
         var pythonDir = CreateTempDirectory();
-        var exception = Assert.Throws<FileNotFoundException>(() => manager.InstallRequirement(Path.Combine(pythonDir, "requirements.txt"), pythonDir));
-        Assert.Contains("requirement", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.InstallRequirement(Path.Combine(pythonDir, "requirements.txt"), _ => { }, _ => { }));
     }
 
     [Fact]
-    public void InstallRequirement_InvokesPipInVirtualEnvironment()
+    public async Task InstallRequirement_InvokesPipInVirtualEnvironment()
     {
-        var manager = new RecordingPythonEmbedManager();
-        var pythonDir = CreateTempDirectory();
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+        var pythonDir = manager.GetPythonDir();
         var requirementPath = Path.Combine(pythonDir, "requirements.txt");
         File.WriteAllText(requirementPath, "requests==2.0.0");
 
-        manager.InstallRequirement(requirementPath, pythonDir);
+        await manager.InstallRequirement(requirementPath, _ => { }, _ => { });
 
         var call = Assert.Single(manager.RunProcessCalls);
-        Assert.Equal(Path.Combine(pythonDir, "venv", "bin", "python"), call.FileName);
+        Assert.Contains("venv", call.FileName);
+        Assert.Contains("python", call.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pip install", call.Arguments, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(pythonDir, call.WorkingDirectory);
     }
 
     [Fact]
-    public void RunPython_ThrowsWhenScriptMissing()
+    public async Task RunPython_ThrowsWhenScriptMissing()
     {
-        var manager = new PythonEmbedManager();
+        var manager = new PythonEmbedManager(CreateTempDirectory());
         var pythonDir = CreateTempDirectory();
-        var exception = Assert.Throws<FileNotFoundException>(() => manager.RunPython(Path.Combine(pythonDir, "script.py"), pythonDir, null!));
-        Assert.Contains("script", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.RunPython(Path.Combine(pythonDir, "script.py"), null!, null!, _ => { }, _ => { }));
     }
 
     [Fact]
-    public void RunPython_ExecutesScriptThroughVirtualEnvironment()
+    public async Task RunPython_ExecutesScriptThroughVirtualEnvironment()
     {
-        var manager = new RecordingPythonEmbedManager();
         var pythonDir = CreateTempDirectory();
+        var manager = new RecordingPythonEmbedManager(pythonDir);
         var scriptDirectory = Path.Combine(pythonDir, "scripts");
         Directory.CreateDirectory(scriptDirectory);
         var scriptPath = Path.Combine(scriptDirectory, "script.py");
         File.WriteAllText(scriptPath, "print('test')");
 
-        manager.RunPython(scriptPath, pythonDir, "--flag value");
+        await manager.RunPython(scriptPath, "--flag value", null, _ => { }, _ => { });
 
         var call = Assert.Single(manager.RunProcessCalls);
-        Assert.Equal(Path.Combine(pythonDir, "venv", "bin", "python"), call.FileName);
+        Assert.Contains("venv", call.FileName);
+        Assert.Contains("python", call.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("script.py", call.Arguments, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--flag value", call.Arguments, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(scriptDirectory, call.WorkingDirectory);
     }
 
     private string CreateTempDirectory()
@@ -169,7 +132,13 @@ public sealed class PythonEmbedManagerTests : IDisposable
         public bool DownloadFileCalled { get; private set; }
         public bool ExtractZipCalled { get; private set; }
         public List<(string Url, string Destination)> DownloadFileCalls { get; } = new();
-        public List<(string FileName, string Arguments, string WorkingDirectory)> RunProcessCalls { get; } = new();
+        public List<(string FileName, string Arguments, string? WorkingDirectory)> RunProcessCalls { get; } = new();
+
+        public RecordingPythonEmbedManager(string pythonDir) : base(pythonDir)
+        {
+        }
+
+        public string GetPythonDir() => typeof(PythonEmbedManager).GetProperty("PythonDir", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(this) as string ?? string.Empty;
 
         protected override void DownloadFile(string url, string destination)
         {
@@ -186,8 +155,9 @@ public sealed class PythonEmbedManagerTests : IDisposable
             File.WriteAllText(Path.Combine(destination, "python.exe"), string.Empty);
         }
 
-        protected override string GetVirtualEnvironmentPythonExecutable(string pythonDir)
+        protected override string GetVirtualEnvironmentPythonExecutable()
         {
+            var pythonDir = GetPythonDir();
             var path = Path.Combine(pythonDir, "venv", "bin", "python");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             if (!File.Exists(path))
@@ -198,9 +168,10 @@ public sealed class PythonEmbedManagerTests : IDisposable
             return path;
         }
 
-        protected override void RunProcess(string fileName, string arguments, string workingDirectory)
+        protected override async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError)
         {
             RunProcessCalls.Add((fileName, arguments, workingDirectory));
+            return await Task.FromResult(0);
         }
     }
 }

@@ -8,7 +8,6 @@ var repoUrl = "https://github.com/xqiu/EdgeTTS-Batch-Audio-Converter.git";
 var baseDirectory = AppContext.BaseDirectory;
 var repoDirectory = Path.Combine(baseDirectory, "EdgeTTS-Batch-Audio-Converter");
 var pythonDirectory = Path.Combine(baseDirectory, "python-runtime");
-var pythonEmbedUrl = "https://www.python.org/ftp/python/3.11.6/python-3.11.6-embed-amd64.zip";
 
 try
 {
@@ -24,14 +23,14 @@ try
     }
 
     Console.WriteLine("Initializing embedded Python environment.");
-    var embedManager = new PythonEmbedManager();
-    embedManager.Init(pythonEmbedUrl, pythonDirectory);
+    var embedManager = new PythonEmbedManager(pythonDirectory);
+    await embedManager.InitPythonEnvironment(onOutput, onError);
 
     var requirementsPath = Path.Combine(repoDirectory, "requirements.txt");
     if (File.Exists(requirementsPath))
     {
         Console.WriteLine("Installing python requirements.");
-        embedManager.InstallRequirement(requirementsPath, pythonDirectory);
+        await embedManager.InstallRequirement(requirementsPath, onOutput, onError);
     }
     else
     {
@@ -40,10 +39,29 @@ try
 
     var scriptPath = Path.Combine(repoDirectory, "EdgeTTS_Batch_Audio_Converter.py");
     Console.WriteLine($"Executing script '{scriptPath}'.");
-    embedManager.RunPython(scriptPath, pythonDirectory, string.Empty);
+    await embedManager.RunPython(scriptPath, string.Empty, repoDirectory, onOutput, onError);
+
+    embedManager.RemovePythonEnvironment(onOutput, onError);
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"An error occurred: {ex.Message}");
     Console.Error.WriteLine(ex);
+}
+
+
+void onOutput(string data)
+{
+    if (!string.IsNullOrWhiteSpace(data))
+    {
+        Console.WriteLine(data);
+    }
+}
+
+void onError(string data)
+{
+    if (!string.IsNullOrWhiteSpace(data))
+    {
+        Console.Error.WriteLine(data);
+    }
 }

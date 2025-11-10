@@ -11,7 +11,11 @@
     <RepositoryType>git</RepositoryType>
     <Title>Dotnet Python Embed</Title>
     <PackageProjectUrl>https://github.com/xqiu/DotNetPythonEmbed</PackageProjectUrl>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\readme.md" Pack="true" PackagePath="\"/>
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.IO.Compression.ZipFile" Version="4.3.0" />
   </ItemGroup>

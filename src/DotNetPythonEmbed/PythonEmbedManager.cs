@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DotNetPythonEmbed;
 
@@ -56,7 +59,7 @@ public class PythonEmbedManager
             var destinationGetPip = Path.Combine(PythonDir, "get-pip.py");
             DownloadFile(getPipUrl, destinationGetPip);
 
-            var result = await RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", null, null, onOutput, onError);
+            var result = await RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", null, null, onOutput, onError, process => { });
             if(result != 0)
             {
                 return result;
@@ -77,13 +80,13 @@ public class PythonEmbedManager
                 File.WriteAllLines(pthFile, lines);
             }
 
-            result = await RunProcess(pythonExecutable, "-m pip install virtualenv", null, null, onOutput, onError);
+            result = await RunProcess(pythonExecutable, "-m pip install virtualenv", null, null, onOutput, onError, process => { });
             if (result != 0)
             {
                 return result;
             }
 
-            result = await RunProcess(pythonExecutable, "-m virtualenv venv", null, null, onOutput, onError);
+            result = await RunProcess(pythonExecutable, "-m virtualenv venv", null, null, onOutput, onError, process => { });
             return result;
 
         }
@@ -154,7 +157,109 @@ public class PythonEmbedManager
         }
 
         var venvPython = GetVirtualEnvironmentPythonExecutable();
-        return await RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", null, GetEnvironmentVars(), onOutput, onError);
+        return await RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", null, GetEnvironmentVars(), onOutput, onError, process => { });
+    }
+
+    /// <summary>
+    /// Installs the python with editor mode¡A e.g. pip install -e directory , will use setup.py or pyproject.toml
+    /// </summary>
+    /// <param name="workDir">Working Directory</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    public async Task<int> InstallRequirementInEditorMode(string workDir, Action<string> onOutput, Action<string> onError)
+    {
+        if (string.IsNullOrWhiteSpace(workDir))
+        {
+            throw new ArgumentException("The working directory must be provided.", nameof(workDir));
+        }
+
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        return await RunProcess(venvPython, $"-m pip install -e \"{Path.GetFullPath(workDir)}\"", null, GetEnvironmentVars(), onOutput, onError, process => { });
+    }
+
+    /// <summary>
+    /// Installs the provided packages inside the embedded virtual environment.
+    /// </summary>
+    /// <param name="packages">Collection of package arguments to pass to pip.</param>
+    /// <param name="extraIndexUrl">Optional extra index URL that will be appended using <c>--index-url</c>.</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if installation succeeds, otherwise a non-zero exit code from pip.</returns>
+    public async Task<int> InstallPackagesAsync(IEnumerable<string> packages, string? extraIndexUrl, Action<string> onOutput, Action<string> onError)
+    {
+        if (packages is null)
+        {
+            throw new ArgumentNullException(nameof(packages));
+        }
+
+        var packageList = packages.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
+        if (packageList.Count == 0)
+        {
+            throw new ArgumentException("At least one package must be provided.", nameof(packages));
+        }
+
+        var argumentsBuilder = new StringBuilder("-m pip install");
+        foreach (var package in packageList)
+        {
+            argumentsBuilder.Append(' ');
+            argumentsBuilder.Append(QuoteArgument(package));
+        }
+
+        if (!string.IsNullOrWhiteSpace(extraIndexUrl))
+        {
+            argumentsBuilder.Append(" --index-url ");
+            argumentsBuilder.Append(QuoteArgument(extraIndexUrl!));
+        }
+
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        return await RunProcess(venvPython, argumentsBuilder.ToString(), null, GetEnvironmentVars(), onOutput, onError, process => { });
+    }
+
+    /// <summary>
+    /// Installs the CUDA-enabled PyTorch stack that matches the machine's CUDA version.
+    /// </summary>
+    /// <param name="torchVersion">Optional PyTorch version to install (e.g. "2.6.0").</param>
+    /// <param name="cudaOverride">Optional CUDA tag or version override (e.g. "cu126" or "12.6").</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if installation succeeds, otherwise a non-zero exit code.</returns>
+    public async Task<int> InstallTorchWithCudaAsync(string? torchVersion, string? cudaOverride, Action<string> onOutput, Action<string> onError)
+    {
+        var cudaTag = NormalizeCudaTag(cudaOverride);
+        if (string.IsNullOrEmpty(cudaTag))
+        {
+            cudaTag = await DetectCudaTag(onOutput, onError);
+        }
+
+        if (string.IsNullOrEmpty(cudaTag))
+        {
+            onError?.Invoke("Unable to detect the CUDA version for PyTorch installation.");
+            return -1;
+        }
+
+        var packages = BuildTorchPackageList(torchVersion, cudaTag);
+
+        var indexUrl = $"https://download.pytorch.org/whl/{cudaTag}";
+        return await InstallPackagesAsync(packages, indexUrl, onOutput, onError);
+    }
+
+    /// <summary>
+    /// Runs a python with the specified parameters.
+    /// </summary>
+    /// <param name="parameters">Command-line parameters to pass to the script.</param>
+    /// <param name="workingDirectory">Working directory for the script execution.</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <param name="onProcessStarted">Process started callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="FileNotFoundException"></exception>
+    public async Task<int> RunPython(string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
+    {
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        // Run the process with the adjusted environment variables
+        return await RunProcess(venvPython, parameters, workingDirectory, GetEnvironmentVars(), onOutput, onError, onProcessStarted);
     }
 
     /// <summary>
@@ -168,7 +273,7 @@ public class PythonEmbedManager
     /// <returns>0 if initialization is successful, otherwise an error code.</returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="FileNotFoundException"></exception>
-    public async Task<int> RunPython(string pythonScript, string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError)
+    public async Task<int> RunPython(string pythonScript, string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
     {
         if (string.IsNullOrWhiteSpace(pythonScript))
         {
@@ -187,7 +292,7 @@ public class PythonEmbedManager
             arguments = $"{arguments} {parameters}";
         }
         // Run the process with the adjusted environment variables
-        return await RunProcess(venvPython, arguments, workingDirectory, GetEnvironmentVars(), onOutput, onError);
+        return await RunProcess(venvPython, arguments, workingDirectory, GetEnvironmentVars(), onOutput, onError, onProcessStarted);
     }
 
     protected virtual void DownloadFile(string url, string destination)
@@ -242,7 +347,7 @@ public class PythonEmbedManager
         return venvEnvVars;
     }
 
-    protected virtual async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError)
+    protected virtual async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -291,6 +396,8 @@ public class PythonEmbedManager
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
+        onProcessStarted?.Invoke(process);
+
         await process.WaitForExitAsync();  // Use async wait to avoid blocking the UI
 
         if (process.ExitCode != 0)
@@ -300,5 +407,165 @@ public class PythonEmbedManager
         }
 
         return process.ExitCode;
+    }
+
+    private static string QuoteArgument(string argument)
+    {
+        if (string.IsNullOrEmpty(argument))
+        {
+            return "\"\"";
+        }
+
+        if (!argument.Any(char.IsWhiteSpace) && !argument.Contains('"'))
+        {
+            return argument;
+        }
+
+        return $"\"{argument.Replace("\"", "\\\"")}\"";
+    }
+
+    private static string? NormalizeCudaTag(string? cudaOverride)
+    {
+        if (string.IsNullOrWhiteSpace(cudaOverride))
+        {
+            return null;
+        }
+
+        var trimmed = cudaOverride.Trim().ToLowerInvariant();
+        if (trimmed.StartsWith("cu", StringComparison.Ordinal))
+        {
+            return trimmed;
+        }
+
+        var versionMatch = Regex.Match(trimmed, "^(?<major>\\d+)(?:\\.(?<minor>\\d+))?");
+        if (versionMatch.Success)
+        {
+            var major = versionMatch.Groups["major"].Value;
+            var minor = versionMatch.Groups["minor"].Success ? versionMatch.Groups["minor"].Value : "0";
+            return $"cu{major}{minor}";
+        }
+
+        return trimmed;
+    }
+
+    private async Task<string?> DetectCudaTag(Action<string> onOutput, Action<string> onError)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "nvidia-smi",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return null;
+            }
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                var error = await errorTask;
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    onError?.Invoke(error.Trim());
+                }
+                return null;
+            }
+
+            var output = await outputTask;
+            var match = Regex.Match(output, @"CUDA Version:\s*(?<major>\d+)\.(?<minor>\d+)", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var major = match.Groups["major"].Value;
+                var minor = match.Groups["minor"].Value;
+                return $"cu{major}{minor}";
+            }
+
+            var envCuda = Environment.GetEnvironmentVariable("CUDA_VERSION");
+            if (!string.IsNullOrWhiteSpace(envCuda))
+            {
+                return NormalizeCudaTag(envCuda);
+            }
+        }
+        catch (Exception ex)
+        {
+            onError?.Invoke($"Failed to detect CUDA version: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> BuildTorchPackageList(string? torchVersion, string cudaTag)
+    {
+        if (string.IsNullOrWhiteSpace(torchVersion))
+        {
+            return new[]
+            {
+                "torch",
+                "torchvision",
+                "torchaudio"
+            };
+        }
+
+        var trimmed = torchVersion.Trim();
+        if (trimmed.Length == 0)
+        {
+            return new[]
+            {
+                "torch",
+                "torchvision",
+                "torchaudio"
+            };
+        }
+
+        var torchSpecifier = BuildTorchSpecifier(trimmed, cudaTag);
+        return new[]
+        {
+            torchSpecifier,
+            "torchvision",
+            "torchaudio"
+        };
+    }
+
+    private static string BuildTorchSpecifier(string versionInput, string cudaTag)
+    {
+        if (versionInput.Contains('+', StringComparison.Ordinal))
+        {
+            if (versionInput.Contains("torch", StringComparison.OrdinalIgnoreCase))
+            {
+                return versionInput;
+            }
+
+            return versionInput.StartsWith("torch", StringComparison.OrdinalIgnoreCase)
+                ? versionInput
+                : $"torch=={versionInput}";
+        }
+
+        if (versionInput.StartsWith("torch", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!versionInput.Contains("==", StringComparison.Ordinal))
+            {
+                return versionInput;
+            }
+
+            var parts = versionInput.Split("==", 2, StringSplitOptions.None);
+            if (parts.Length == 2 && !parts[1].Contains('+', StringComparison.Ordinal))
+            {
+                return $"{parts[0]}=={parts[1]}+{cudaTag}";
+            }
+
+            return versionInput;
+        }
+
+        return $"torch=={versionInput}+{cudaTag}";
     }
 }

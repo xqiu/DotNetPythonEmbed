@@ -448,7 +448,7 @@ public class PythonEmbedManager
         return trimmed;
     }
 
-    private async Task<string?> DetectCudaTag(Action<string> onOutput, Action<string> onError)
+    protected virtual async Task<string?> DetectCudaTag(Action<string> onOutput, Action<string> onError)
     {
         try
         {

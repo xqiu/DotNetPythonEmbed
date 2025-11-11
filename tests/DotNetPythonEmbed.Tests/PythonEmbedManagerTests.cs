@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -59,6 +60,35 @@ public sealed class PythonEmbedManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task InstallPackagesAsync_ThrowsWhenPackagesNull()
+    {
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+        await Assert.ThrowsAsync<ArgumentNullException>(() => manager.InstallPackagesAsync(null!, null, _ => { }, _ => { }));
+    }
+
+    [Fact]
+    public async Task InstallPackagesAsync_ThrowsWhenPackagesEmpty()
+    {
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+        await Assert.ThrowsAsync<ArgumentException>(() => manager.InstallPackagesAsync(new[] { "  ", string.Empty }, null, _ => { }, _ => { }));
+    }
+
+    [Fact]
+    public async Task InstallPackagesAsync_InvokesPipWithPackagesAndIndex()
+    {
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+
+        await manager.InstallPackagesAsync(new[] { "torch", "custom package" }, "https://example.com/simple", _ => { }, _ => { });
+
+        var call = Assert.Single(manager.RunProcessCalls);
+        Assert.Contains("-m pip install", call.Arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("torch", call.Arguments, StringComparison.Ordinal);
+        Assert.Contains("\"custom package\"", call.Arguments, StringComparison.Ordinal);
+        Assert.Contains("--index-url", call.Arguments, StringComparison.Ordinal);
+        Assert.Contains("https://example.com/simple", call.Arguments, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task InstallRequirement_InvokesPipInVirtualEnvironment()
     {
         var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
@@ -72,6 +102,8 @@ public sealed class PythonEmbedManagerTests : IDisposable
         Assert.Contains("venv", call.FileName);
         Assert.Contains("python", call.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pip install", call.Arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(call.EnvironmentVariables);
+        Assert.Equal(Path.Combine(manager.GetPythonDir(), "venv"), Assert.Contains("VIRTUAL_ENV", call.EnvironmentVariables!));
     }
 
     [Fact]
@@ -79,7 +111,7 @@ public sealed class PythonEmbedManagerTests : IDisposable
     {
         var manager = new PythonEmbedManager(CreateTempDirectory());
         var pythonDir = CreateTempDirectory();
-        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.RunPython(Path.Combine(pythonDir, "script.py"), null!, null!, _ => { }, _ => { }));
+        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.RunPython(Path.Combine(pythonDir, "script.py"), null!, null!, _ => { }, _ => { }, _ => { }));
     }
 
     [Fact]
@@ -92,13 +124,43 @@ public sealed class PythonEmbedManagerTests : IDisposable
         var scriptPath = Path.Combine(scriptDirectory, "script.py");
         File.WriteAllText(scriptPath, "print('test')");
 
-        await manager.RunPython(scriptPath, "--flag value", null, _ => { }, _ => { });
+        await manager.RunPython(scriptPath, "--flag value", null, _ => { }, _ => { }, _ => { });
 
         var call = Assert.Single(manager.RunProcessCalls);
         Assert.Contains("venv", call.FileName);
         Assert.Contains("python", call.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("script.py", call.Arguments, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--flag value", call.Arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(call.EnvironmentVariables);
+        Assert.Equal(Path.Combine(manager.GetPythonDir(), "venv"), Assert.Contains("VIRTUAL_ENV", call.EnvironmentVariables!));
+    }
+
+    [Fact]
+    public async Task InstallTorchWithCudaAsync_UsesProvidedCudaOverride()
+    {
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+
+        var result = await manager.InstallTorchWithCudaAsync("2.5.1", "cu126", _ => { }, _ => { });
+
+        Assert.Equal(0, result);
+
+        var call = Assert.Single(manager.RunProcessCalls);
+        Assert.Contains("--index-url", call.Arguments, StringComparison.Ordinal);
+        Assert.Contains("download.pytorch.org/whl/cu126", call.Arguments, StringComparison.Ordinal);
+        Assert.Contains("torch==2.5.1+cu126", call.Arguments, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InstallTorchWithCudaAsync_ReturnsErrorWhenCudaCannotBeDetected()
+    {
+        var manager = new RecordingPythonEmbedManager(CreateTempDirectory());
+        var errors = new List<string>();
+
+        var result = await manager.InstallTorchWithCudaAsync(null, null, _ => { }, errors.Add);
+
+        Assert.Equal(-1, result);
+        Assert.NotEmpty(errors);
+        Assert.Empty(manager.RunProcessCalls);
     }
 
     private string CreateTempDirectory()
@@ -132,7 +194,7 @@ public sealed class PythonEmbedManagerTests : IDisposable
         public bool DownloadFileCalled { get; private set; }
         public bool ExtractZipCalled { get; private set; }
         public List<(string Url, string Destination)> DownloadFileCalls { get; } = new();
-        public List<(string FileName, string Arguments, string? WorkingDirectory)> RunProcessCalls { get; } = new();
+        public List<(string FileName, string Arguments, string? WorkingDirectory, Dictionary<string, string>? EnvironmentVariables)> RunProcessCalls { get; } = new();
 
         public RecordingPythonEmbedManager(string pythonDir) : base(pythonDir)
         {
@@ -168,10 +230,16 @@ public sealed class PythonEmbedManagerTests : IDisposable
             return path;
         }
 
-        protected override async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError)
+        protected override async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
         {
-            RunProcessCalls.Add((fileName, arguments, workingDirectory));
+            RunProcessCalls.Add((fileName, arguments, workingDirectory, environmentVariables is null ? null : new Dictionary<string, string>(environmentVariables)));
+            onProcessStarted?.Invoke(new Process());
             return await Task.FromResult(0);
+        }
+
+        protected override async Task<string?> DetectCudaTag(Action<string> onOutput, Action<string> onError)
+        {
+            return await Task.FromResult<string?>(null);
         }
     }
 }

@@ -59,7 +59,7 @@ public class PythonEmbedManager
             var destinationGetPip = Path.Combine(PythonDir, "get-pip.py");
             DownloadFile(getPipUrl, destinationGetPip);
 
-            var result = await RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", null, null, onOutput, onError);
+            var result = await RunProcess(pythonExecutable, $"\"{destinationGetPip}\"", null, null, onOutput, onError, process => { });
             if(result != 0)
             {
                 return result;
@@ -80,13 +80,13 @@ public class PythonEmbedManager
                 File.WriteAllLines(pthFile, lines);
             }
 
-            result = await RunProcess(pythonExecutable, "-m pip install virtualenv", null, null, onOutput, onError);
+            result = await RunProcess(pythonExecutable, "-m pip install virtualenv", null, null, onOutput, onError, process => { });
             if (result != 0)
             {
                 return result;
             }
 
-            result = await RunProcess(pythonExecutable, "-m virtualenv venv", null, null, onOutput, onError);
+            result = await RunProcess(pythonExecutable, "-m virtualenv venv", null, null, onOutput, onError, process => { });
             return result;
 
         }
@@ -157,7 +157,25 @@ public class PythonEmbedManager
         }
 
         var venvPython = GetVirtualEnvironmentPythonExecutable();
-        return await RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", null, GetEnvironmentVars(), onOutput, onError);
+        return await RunProcess(venvPython, $"-m pip install -r \"{Path.GetFullPath(requirementPath)}\"", null, GetEnvironmentVars(), onOutput, onError, process => { });
+    }
+
+    /// <summary>
+    /// Installs the python with editor mode¡A e.g. pip install -e directory , will use setup.py or pyproject.toml
+    /// </summary>
+    /// <param name="workDir">Working Directory</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    public async Task<int> InstallRequirementInEditorMode(string workDir, Action<string> onOutput, Action<string> onError)
+    {
+        if (string.IsNullOrWhiteSpace(workDir))
+        {
+            throw new ArgumentException("The working directory must be provided.", nameof(workDir));
+        }
+
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        return await RunProcess(venvPython, $"-m pip install -e \"{Path.GetFullPath(workDir)}\"", null, GetEnvironmentVars(), onOutput, onError, process => { });
     }
 
     /// <summary>
@@ -195,7 +213,7 @@ public class PythonEmbedManager
         }
 
         var venvPython = GetVirtualEnvironmentPythonExecutable();
-        return await RunProcess(venvPython, argumentsBuilder.ToString(), null, GetEnvironmentVars(), onOutput, onError);
+        return await RunProcess(venvPython, argumentsBuilder.ToString(), null, GetEnvironmentVars(), onOutput, onError, process => { });
     }
 
     /// <summary>
@@ -227,6 +245,24 @@ public class PythonEmbedManager
     }
 
     /// <summary>
+    /// Runs a python with the specified parameters.
+    /// </summary>
+    /// <param name="parameters">Command-line parameters to pass to the script.</param>
+    /// <param name="workingDirectory">Working directory for the script execution.</param>
+    /// <param name="onOutput">Output callback.</param>
+    /// <param name="onError">Error callback.</param>
+    /// <param name="onProcessStarted">Process started callback.</param>
+    /// <returns>0 if initialization is successful, otherwise an error code.</returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="FileNotFoundException"></exception>
+    public async Task<int> RunPython(string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
+    {
+        var venvPython = GetVirtualEnvironmentPythonExecutable();
+        // Run the process with the adjusted environment variables
+        return await RunProcess(venvPython, parameters, workingDirectory, GetEnvironmentVars(), onOutput, onError, onProcessStarted);
+    }
+
+    /// <summary>
     /// Runs a Python script with the specified parameters.
     /// </summary>
     /// <param name="pythonScript">Path to the Python script to execute.</param>
@@ -237,7 +273,7 @@ public class PythonEmbedManager
     /// <returns>0 if initialization is successful, otherwise an error code.</returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="FileNotFoundException"></exception>
-    public async Task<int> RunPython(string pythonScript, string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError)
+    public async Task<int> RunPython(string pythonScript, string parameters, string workingDirectory, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
     {
         if (string.IsNullOrWhiteSpace(pythonScript))
         {
@@ -256,7 +292,7 @@ public class PythonEmbedManager
             arguments = $"{arguments} {parameters}";
         }
         // Run the process with the adjusted environment variables
-        return await RunProcess(venvPython, arguments, workingDirectory, GetEnvironmentVars(), onOutput, onError);
+        return await RunProcess(venvPython, arguments, workingDirectory, GetEnvironmentVars(), onOutput, onError, onProcessStarted);
     }
 
     protected virtual void DownloadFile(string url, string destination)
@@ -311,7 +347,7 @@ public class PythonEmbedManager
         return venvEnvVars;
     }
 
-    protected virtual async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError)
+    protected virtual async Task<int> RunProcess(string fileName, string arguments, string? workingDirectory, Dictionary<string, string>? environmentVariables, Action<string> onOutput, Action<string> onError, Action<Process> onProcessStarted)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -359,6 +395,8 @@ public class PythonEmbedManager
         // Start async reading the output and error streams
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+
+        onProcessStarted?.Invoke(process);
 
         await process.WaitForExitAsync();  // Use async wait to avoid blocking the UI
 

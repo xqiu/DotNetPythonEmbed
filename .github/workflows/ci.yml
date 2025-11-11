@@ -10,17 +10,26 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (full history + tags)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history (not shallow)
+          fetch-tags: true      # include tags for NBGV
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      - name: Restore dependencies
+      # (Optional) sanity check so you can see history/tags in logs
+      - name: Show git state
+        run: |
+          git --version
+          git log --oneline -n 5 || true
+          git tag --list | head -n 20 || true
+
+      - name: Restore
         run: dotnet restore DotNetPythonEmbed.sln
-        continue-on-error: false
 
       - name: Build
         run: dotnet build DotNetPythonEmbed.sln --configuration Release --no-restore

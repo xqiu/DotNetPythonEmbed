@@ -158,7 +158,9 @@ public sealed class PythonEmbedManagerTests : IDisposable
 
         var result = await manager.InstallTorchWithCudaAsync(null, null, _ => { }, errors.Add);
 
-        Assert.Equal(0, result);
+        Assert.Equal(-1, result);
+        Assert.NotEmpty(errors);
+        Assert.Empty(manager.RunProcessCalls);
     }
 
     private string CreateTempDirectory()
@@ -233,6 +235,11 @@ public sealed class PythonEmbedManagerTests : IDisposable
             RunProcessCalls.Add((fileName, arguments, workingDirectory, environmentVariables is null ? null : new Dictionary<string, string>(environmentVariables)));
             onProcessStarted?.Invoke(new Process());
             return await Task.FromResult(0);
+        }
+
+        protected override async Task<string?> DetectCudaTag(Action<string> onOutput, Action<string> onError)
+        {
+            return await Task.FromResult<string?>(null);
         }
     }
 }
